@@ -254,9 +254,9 @@
 <div class="bootlock" id="bootLock">
   <div class="bootcard">
     <div class="logo"><svg class="lotus" viewBox="0 0 48 48" width="24" height="24" aria-hidden="true"><g fill="currentColor"><path d="M24 41 C22.5 30 23 20 24 11 C25 20 25.5 30 24 41 Z"/><path d="M24 40 C15 36 9 29 9 21 C16 24 21 31 24 40 Z"/><path d="M24 40 C33 36 39 29 39 21 C32 24 27 31 24 40 Z"/><path d="M24 41 C17 41 11 37 10 32 C16 33 21 36 24 41 Z"/><path d="M24 41 C31 41 37 37 38 32 C32 33 27 36 24 41 Z"/></g></svg>恒伽瑜伽管理系统</div>
-    <p>此文件含加密数据，请输入主密码解锁</p>
-    <input id="bootPwd" type="password" placeholder="主密码" onkeydown="if(event.key==='Enter')bootUnlock()">
-    <button class="btn" onclick="bootUnlock()">解锁</button>
+    <p id="bootMsg">此文件含加密数据，请输入主密码解锁</p>
+    <input id="bootPwd" type="password" placeholder="主密码" onkeydown="if(event.key==='Enter')unlockFromBoot()">
+    <button class="btn" onclick="unlockFromBoot()">解锁</button>
     <p class="hint">忘记主密码时，可用「恢复码」解锁（首次设密码时生成，请妥善保存）。</p>
   </div>
 </div>
@@ -273,6 +273,7 @@ function cyrb53(str,seed=0){let h1=0xdeadbeef^seed,h2=0x41c6ce57^seed;for(let i=
 
 let bootEnc=null;
 let masterPwd=null;
+let publicPayload=null;
 const KEY_W='hejia_wraps_v1';
 let dataKey=null;
 function load(){try{if(window.__INIT__)return window.__INIT__;if(window.__ENC__){bootEnc=window.__ENC__;return {pwdHash:null,recoveryKey:'',pwdHint:'',employees:[],devices:[],numbers:[],credentials:[],assignments:[],logs:[]};}const r=localStorage.getItem(KEY);if(r)return JSON.parse(r);}catch(e){}return {pwdHash:null,recoveryKey:'',pwdHint:'',employees:[],devices:[],numbers:[],credentials:[],assignments:[],logs:[]};}
@@ -592,8 +593,8 @@ function renderSettings(){
     <div class="panel-body">
       <p class="hint">把整库加密后<b>自动写入你自己的私有仓库</b>（默认 Gitee 码云，国内访问更稳；也可切 GitHub）。手机/电脑/平板打开同一个文件即自动同步，<b>永不丢失、无需手动备份</b>。令牌是你自己的，不经过任何人；云端只有密文，没主密码解不开。</p>
       <label class="fld"><span>同步平台</span><select id="syProvider">
-        <option value="gitee" ${syncCfg.provider==='gitee'?'selected':''}>Gitee 码云（国内更稳·推荐）</option>
-        <option value="github" ${syncCfg.provider==='github'?'selected':''}>GitHub（国际·偶发不稳）</option>
+        <option value="github" ${syncCfg.provider==='github'?'selected':''}>GitHub（已部署·推荐）</option>
+        <option value="gitee" ${syncCfg.provider==='gitee'?'selected':''}>Gitee 码云（注意：网页端 API 跨域受限，可能无法同步）</option>
       </select></label>
       <label class="fld"><span>仓库所有者（用户名）</span><input id="syOwner" value="${escapeHtml(syncCfg.owner)}" placeholder="如 liwei-hfut"></label>
       <label class="fld"><span>仓库名（私有）</span><input id="syRepo" value="${escapeHtml(syncCfg.repo)}" placeholder="如 hejia-yoga"></label>
@@ -716,7 +717,7 @@ function escapeHtml(s){return (s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&
 
 /* ---------- GitHub 自动云同步（自主可控：仅写入你自己的私有仓库） ---------- */
 const SYNC_KEY='yoga_sync_cfg';
-let syncCfg={provider:'gitee',owner:'',repo:'',path:'yoga-data.aes.json',branch:'master',token:'',enabled:false};
+let syncCfg={provider:'github',owner:'',repo:'',path:'yoga-data.aes.json',branch:'main',token:'',enabled:false};
 let syncSha=null;
 let syncTimer=null;
 let syncState='idle'; // idle | syncing | ok | error
@@ -797,7 +798,7 @@ async function syncPull(){
     const r=await res.json();syncSha=r.sha;
     const payload=JSON.parse(b64ToUtf8(r.content));
     const d=await decPayloadObj(payload,masterPwd);
-    if(!d){alert('云端数据解密失败（主密码不符或文件损坏）');syncState='error';setSyncBadge();return false;}
+    if(!d){syncState='error';setSyncBadge();return false;}
     state=d;state.pwdHash=state.pwdHash||null;save();render();
     if(payload.masterWrap)saveWraps({masterWrap:payload.masterWrap,recoveryWrap:payload.recoveryWrap,recoveryKey:state.recoveryKey||'',pwdHint:state.pwdHint||''});
     syncState='ok';setSyncBadge();return true;
@@ -840,8 +841,42 @@ function syncPushNow(){syncPush();}
 /* ---------- 启动 ---------- */
 function ok(fn){document.getElementById('modalOk').onclick=fn;}
 renderLock();
-if(bootEnc){document.getElementById('bootLock').style.display='flex';}
-render();
+boot();
+async function boot(){
+  if(bootEnc){showBoot('此文件含加密数据，请输入主密码解锁');return;}
+  const hasLocal=state.employees.length||state.devices.length||state.numbers.length||state.credentials.length;
+  if(hasLocal&&!unlocked){showBoot('请输入主密码以进入系统');return;}
+  if(!hasLocal && location.protocol!=='file:'){
+    publicPayload=await fetchPublicData();
+    if(publicPayload){showBoot('输入主密码以载入云端数据');return;}
+  }
+  if(syncCfg.enabled&&syncCfg.owner&&syncCfg.repo&&syncCfg.token&&!hasLocal){showBoot('输入主密码以载入云端数据');return;}
+  render();
+}
+async function fetchPublicData(){
+  try{
+    const path=syncCfg.path||'yoga-data.aes.json';
+    const base=location.pathname.replace(/\/$/,'');
+    const url=location.origin+(base||'')+'/'+path+'?t='+Date.now();
+    const res=await fetch(url,{cache:'no-store'});
+    if(!res.ok)return null;
+    return await res.json();
+  }catch(e){return null;}
+}
+function showBoot(msg){const m=document.getElementById('bootMsg');if(m)m.textContent=msg;document.getElementById('bootLock').style.display='flex';}
+function closeBoot(){document.getElementById('bootLock').style.display='none';render();}
+async function unlockFromBoot(){if(bootEnc){await bootUnlock();return;}await requestUnlock();}
+async function requestUnlock(){
+  const p=document.getElementById('bootPwd').value;if(!p)return;
+  if(await attemptUnlock(p)){closeBoot();return;}
+  if(publicPayload){
+    const d=await decPayloadObj(publicPayload,p);
+    if(d){state=d;state.pwdHash=state.pwdHash||null;save();if(publicPayload.masterWrap)saveWraps({masterWrap:publicPayload.masterWrap,recoveryWrap:publicPayload.recoveryWrap,recoveryKey:state.recoveryKey||'',pwdHint:state.pwdHint||''});unlocked=true;masterPwd=p;renderLock();closeBoot();return;}
+  }
+  if(syncCfg.enabled&&syncCfg.owner&&syncCfg.repo&&syncCfg.token){masterPwd=p;const ok=await syncPull();if(ok){unlocked=true;renderLock();closeBoot();return;}}
+  if(confirm('解锁失败。'+(state.pwdHint?('\n提示：'+state.pwdHint):'')+'改用恢复码解锁？')){const r=prompt('输入恢复码：');if(r){document.getElementById('bootPwd').value=r;await requestUnlock();}}
+  else alert('解锁失败');
+}
 </script>
 </body>
 </html>
